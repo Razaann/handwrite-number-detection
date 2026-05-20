@@ -1,6 +1,6 @@
 """
-Real-Time Handwritten Digit Detection - Fixed for streamlit-webrtc >= 0.20
-==========================================================================
+Real-Time Handwritten Digit Detection - Fixed for Streamlit Cloud
+==================================================================
 """
 
 import streamlit as st
@@ -12,7 +12,13 @@ import os
 import tempfile
 import time
 import av
+import warnings
+import asyncio
 from streamlit_webrtc import VideoProcessorBase, webrtc_streamer, WebRtcMode
+
+# Suppress noisy asyncio warnings from aioice
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -58,7 +64,7 @@ else:
             st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VIDEO PROCESSOR (New API for streamlit-webrtc >= 0.20)
+# VIDEO PROCESSOR
 # ─────────────────────────────────────────────────────────────────────────────
 class DigitDetector(VideoProcessorBase):
     def __init__(self):
@@ -68,17 +74,15 @@ class DigitDetector(VideoProcessorBase):
         self.status = "Waiting..."
 
     def recv(self, frame):
-        # If no model, just pass through
         if MODEL is None:
             return frame
             
         img = frame.to_ndarray(format="bgr24")
         current_time = time.time()
 
-        # Predict every 0.5 seconds to save CPU
+        # Predict every 0.5 seconds
         if current_time - self.last_time > 0.5:
             try:
-                # 1. Preprocess
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 if np.mean(gray) > 127:
                     gray = cv2.bitwise_not(gray)
@@ -106,7 +110,6 @@ class DigitDetector(VideoProcessorBase):
                         self.last_conf = float(np.max(preds)) * 100
                         self.status = f"Digit: {self.last_pred}"
                         
-                        # Draw Green Box
                         scale_x = img.shape[1] / 224
                         scale_y = img.shape[0] / 224
                         cv2.rectangle(img, (int(x1*scale_x), int(y1*scale_y)), 
@@ -125,7 +128,6 @@ class DigitDetector(VideoProcessorBase):
             
             self.last_time = current_time
 
-        # 2. Draw Status Text on Video
         cv2.rectangle(img, (10, 10), (300, 60), (0, 0, 0), -1)
         cv2.putText(img, self.status, (20, 40), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
@@ -139,21 +141,34 @@ st.markdown('<h1 class="main-header"> Real-Time Digit Detection</h1>', unsafe_al
 
 if MODEL is not None:
     st.markdown("### 📹 Live Camera")
-    st.caption("Look for the **Green Box** (Digit Found) or **Red Box** (No Digit) on the video.")
+    st.caption("Look for the **Green Box** (Digit Found) on the video.")
     
-    # Use video_processor_factory (Class, not Instance)
+    # Robust RTC Configuration for Streamlit Cloud
+    rtc_config = {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            # Public TURN server (free, but may be slow)
+            {
+                "urls": "turn:openrelay.metered.ca:80",
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            }
+        ]
+    }
+
     ctx = webrtc_streamer(
         key="digit-cam",
         mode=WebRtcMode.SENDRECV,
         video_processor_factory=DigitDetector,
         media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        rtc_configuration=rtc_config,
     )
 
     if ctx.state.playing:
         st.success("🟢 Camera Active")
     else:
-        st.warning("⚪ Camera Stopped")
+        st.warning("⚪ Camera Stopped - Check permissions or network")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UPLOAD FALLBACK
